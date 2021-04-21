@@ -1,0 +1,359 @@
+---
+title: "ML2 Team 1 Presentation 2"
+output: html_document
+---
+
+## Linear Model Selection and Regularization {.tabset .tabset-fade} 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Load Data
+
+</br></br>
+
+Test Will be used for Validation
+Train will be Split in .8/.2 for model testing. 
+
+```{r, collapse=T, comment=NA, warning=F}
+Trans <- read.csv("D:/Downloads/train_transaction.csv")
+head(Trans, 20)
+colnames(Trans)
+```
+A lot of columns-  No good desc on what many of them do
+
+```{r, collapse=T, comment=NA, warning=F}
+Trans<-Trans[,1:55] # cut out "V" fields
+Iden <- read.csv("D:/Downloads/train_identity.csv")
+head(Iden,20)
+```
+
+**Adding Info for device.  Get most comon Device type**
+
+```{r, collapse=T, comment=NA, warning=F}
+library(dplyr)
+library(tidyr)
+```
+From Top team -> card1,addr1, and D1
+```{r, collapse=T, comment=NA, warning=F}
+User<-Trans %>% select(TransactionID,card1, addr1, D1) 
+Device<- Iden %>% select(TransactionID,DeviceType,DeviceInfo)
+```
+we now have linking fields on transaction ID to join Identity to the User Table
+```{r, collapse=T, comment=NA, warning=F}
+SummaryTable_USER_DEVICE <-left_join(User, Device, by = "TransactionID")
+```
+Replacing null values with "Unknown"  
+```{r, collapse=T, comment=NA, warning=F}
+SummaryTable_USER_DEVICE<- SummaryTable_USER_DEVICE %>% mutate(DeviceInfo = replace_na(DeviceInfo, "UnKNOWN")) %>%
+  mutate(DeviceInfo= replace(DeviceInfo,DeviceInfo=="", "UnKNOWN")) %>% mutate(DeviceType = replace_na(DeviceType, "UnKNOWN")) %>%
+  mutate(DeviceType= replace(DeviceType,DeviceType=="", "UnKNOWN"))
+```
+Creating a surrogate key for user id 
+```{r, collapse=T, comment=NA, warning=F}
+OneKey<- filter(SummaryTable_USER_DEVICE,DeviceInfo!="UnKNOWN") %>% unite(User,'card1','addr1','D1',sep='|')%>% 
+  unite(Device,'DeviceType','DeviceInfo',sep='|') 
+```
+Grouping by the surrogate key , couting the occurrence of device and taking the top one per user id 
+```{r, collapse=T, comment=NA, warning=F}
+
+MostCommon<- OneKey %>% group_by(User)%>% count(Device) %>% slice(which.max(1))
+
+```
+Taking only the linking data and # user 
+```{r, collapse=T, comment=NA, warning=F}
+MostCommon<- MostCommon %>% select('User','Device')
+```
+Joining data back to most common and one key which has trasnaction ID
+```{r, collapse=T, comment=NA, warning=F}
+Joined<-  left_join(OneKey, MostCommon, by = "User")
+```
+Seeing if the device in the transaction matches the most common for the user
+```{r, collapse=T, comment=NA, warning=F}
+TranMatched<- Joined %>% mutate(Matched= (Device.x==Device.y))
+```
+Taking only the transaction ID and the resulting boolean
+```{r, collapse=T, comment=NA, warning=F}
+TranMatched<- TranMatched%>% select('TransactionID','Matched')
+```
+
+**Getting Back to Transactions**
+```{r, collapse=T, comment=NA, warning=F}
+Trans$card4<-as.factor(Trans$card4) #Master Visa Etc. 
+
+Trans$isFraud<-as.factor(Trans$isFraud) #Binary Class
+
+Trans$ProductCD <-as.factor(Trans$ProductCD ) #Product type
+```
+Creating Boolean for email domain matching or True if second domain is blank (bill to and send to are the same)
+```{r, collapse=T, comment=NA, warning=F}
+WorkingTrans<- Trans  %>%
+  mutate(EmailsMatch=((P_emaildomain)==(R_emaildomain)| R_emaildomain==''))
+```
+Convert to factor
+```{r, collapse=T, comment=NA, warning=F}
+WorkingTrans$EmailsMatch<- as.factor(WorkingTrans$EmailsMatch)
+```
+Select fields
+```{r, collapse=T, comment=NA, warning=F}
+
+FirstDataSet<- WorkingTrans %>% select('TransactionID','isFraud','TransactionAmt','ProductCD','card1','card2','card3','card4','card5','card6'
+                                       ,'addr1','addr2','EmailsMatch')
+```
+Join our matching information on device 
+
+```{r, collapse=T, comment=NA, warning=F}
+JoinedSet<- left_join(FirstDataSet, TranMatched, by = "TransactionID")
+```
+Matched as factor 
+```{r, collapse=T, comment=NA, warning=F}
+JoinedSet$Matched<- as.factor(JoinedSet$Matched)
+```
+Final output 
+```{r, collapse=T, comment=NA, warning=F}
+Output_SET_1<- JoinedSet %>% select('isFraud','TransactionAmt','ProductCD','card1','card2','card3','card4','card5','card6'
+                                    ,'addr1','addr2','EmailsMatch','Matched')
+```
+
+### Ridge
+
+</br></br>
+
+```{r, collapse=T, comment=NA, warning=F}
+library(glmnet)
+```
+Make sure is fraud is a factor for binary classification 
+
+```{r, collapse=T, comment=NA, warning=F}
+Output_SET_1$isFraud<-as.factor(Output_SET_1$isFraud)
+```
+Fixing sparse factors where small occurence types exist
+```{r, collapse=T, comment=NA, warning=F}
+Output_SET_1<-Output_SET_1%>% mutate(Matched = replace_na(Matched, FALSE)) %>% mutate(card6 = replace(card6,card6=='charge card','credit')) %>%
+  mutate(card6 = replace(card6,card6=='debit or credit','debit')) %>%  mutate(card6 = replace(card6,card6=='','credit'))
+
+summary(Output_SET_1)
+```
+Re casting it to factor
+```{r, collapse=T, comment=NA, warning=F}
+Output_SET_1$card6<-as.factor(as.character(Output_SET_1$card6)) #Credit/Debit
+```
+Perform mean replacement for other numeric fields if na
+```{r, collapse=T, comment=NA, warning=F}
+for(i in 1:ncol(Output_SET_1)){
+  Output_SET_1[is.na(Output_SET_1[,i]), i] <- mean(Output_SET_1[,i], na.rm = TRUE)
+}
+
+
+summary(Output_SET_1)
+```
+Split data
+```{r, collapse=T, comment=NA, warning=F}
+set.seed(2021)
+LenData<-nrow(Output_SET_1)
+Test.Index<-sample(1:LenData*.8)
+```
+Create Train and Test Sets
+```{r, collapse=T, comment=NA, warning=F}
+Train<-Output_SET_1[Test.Index,]
+Test<- Output_SET_1[-Test.Index,]
+```
+
+Create x Matrix
+```{r, collapse=T, comment=NA, warning=F}
+x_train <- model.matrix( ~ .-1, Train[,2:ncol(Train)])
+summary(Output_SET_1)
+```
+Create label vector
+```{r, collapse=T, comment=NA, warning=F}
+Y.Train<-Train[,1]
+```
+Create test matrix and labels
+```{r, collapse=T, comment=NA, warning=F}
+x_test <- model.matrix( ~ .-1, Test[,2:ncol(Test)])
+Y.Test<-Test[,1]
+```
+Create grid of lambdas
+
+```{r, collapse=T, comment=NA, warning=F}
+lambdas <- 10^seq(3, -2, by = -1)
+```
+Fit GLM
+```{r, collapse=T, comment=NA, warning=F}
+GLM_FIT <- cv.glmnet(x_train, Y.Train, alpha = 0, lambda = lambdas,family='binomial')
+summary(GLM_FIT)
+
+```
+Get best Lambda 
+
+```{r, collapse=T, comment=NA, warning=F}
+best_lambda <- GLM_FIT$lambda[which.min(GLM_FIT$cvm)]
+best_lambda
+```
+Create best model
+
+```{r, collapse=T, comment=NA, warning=F}
+Best_Ridge<- glmnet(x_train, Y.Train, alpha = 0, lambda = best_lambda,family='binomial')
+```
+Predict class (.5 threshold)
+```{r, collapse=T, comment=NA, warning=F}
+preds<-predict(Best_Ridge,newx = x_test,type = 'class')
+table(preds,Y.Test)
+```
+Get raw prediction values
+```{r, collapse=T, comment=NA, warning=F}
+predsVal<-predict(Best_Ridge,newx = x_test)
+```
+Plot AUC 
+```{r, collapse=T, comment=NA, warning=F}
+library(ROCR)
+Ridge_AUCThing <- prediction(predsVal,Y.Test, label.ordering = c(0,1))
+Ridge_Chart <- performance(Ridge_AUCThing,"tpr", "fpr")
+plot(Ridge_Chart)
+```
+Get AUC value
+```{r, collapse=T, comment=NA, warning=F}
+auc_ROCR <- performance(Ridge_AUCThing, measure = "auc")
+auc_ROCR <- auc_ROCR@y.values[[1]]
+auc_ROCR # [1] 0.726611
+```
+### Lasso
+
+</br></br>
+Fit Lasso model
+```{r, collapse=T, comment=NA, warning=F}
+GLM_FIT_LASSO <- cv.glmnet(x_train, Y.Train, alpha = 1, lambda = lambdas,family='binomial',trainControl='cv')
+summary(GLM_FIT_LASSO)
+```
+Best lambda
+```{r, collapse=T, comment=NA, warning=F}
+best_lambda <- GLM_FIT_LASSO$lambda[which.min(GLM_FIT_LASSO$cvm)]
+best_lambda
+```
+Best model
+```{r, collapse=T, comment=NA, warning=F}
+Best_Lasso<- glmnet(x_train, Y.Train, alpha = 1, lambda = best_lambda,family='binomial')
+```
+Basic predictions
+```{r, collapse=T, comment=NA, warning=F}
+preds<-predict(Best_Lasso,newx = x_test,type = 'class')
+table(preds,Y.Test)
+```
+Raw Predcitions 
+```{r, collapse=T, comment=NA, warning=F}
+predsVal_Lasso<-predict(Best_Lasso,newx = x_test)
+```
+Plot AUC
+```{r, collapse=T, comment=NA, warning=F}
+library(ROCR)
+Lasso_AUCThing <- prediction(predsVal_Lasso,Y.Test, label.ordering = c(0,1))
+Lasso_Chart <- performance(Lasso_AUCThing,"tpr", "fpr")
+plot(Lasso_Chart)
+```
+Get AUC value 
+```{r, collapse=T, comment=NA, warning=F}
+auc_ROCR <- performance(Lasso_AUCThing, measure = "auc")
+auc_ROCR <- auc_ROCR@y.values[[1]]
+auc_ROCR # [1] 0.7265185 # on new run 0.7165336
+```
+
+### XGBOOST
+
+</br></br>
+```{r, collapse=T, comment=NA, warning=F}
+library(xgboost)
+```
+Create numeric labels for XGboost
+```{r, collapse=T, comment=NA, warning=F}
+labels = as.numeric(Train[,1])-1
+
+xgboost_model <- xgboost(data = x_train, label = labels,max_depth = 18, 
+                         objective = "binary:logistic", nrounds = 100, 
+                         verbose = TRUE, prediction = TRUE)
+
+summary(xgboost_model)
+xgboost_model
+```
+Predict outcomes
+```{r, collapse=T, comment=NA, warning=F}
+boost_preds<-predict(xgboost_model,newdata = x_test,type='class')
+```
+Check .5 thres confusion matrix
+```{r, collapse=T, comment=NA, warning=F}
+table(boost_preds>=.5,Test$isFraud)
+```
+Plot AUC
+```{r, collapse=T, comment=NA, warning=F}
+library(ROCR)
+XGBOOST_AUCThing <- prediction(boost_preds,Test$isFraud, label.ordering = c(0,1))
+XGBOOST_Chart <- performance(XGBOOST_AUCThing,"tpr", "fpr")
+plot(XGBOOST_Chart)
+
+```
+Get AUC value
+```{r, collapse=T, comment=NA, warning=F}
+auc_ROCR <- performance(XGBOOST_AUCThing, measure = "auc")
+auc_ROCR <- auc_ROCR@y.values[[1]]
+auc_ROCR # [1] 0.7882256 second run -0.7851282
+```
+
+### GBM
+</br></br>
+
+```{r, collapse=T, comment=NA, warning=F}
+library(caret)
+```
+
+Fit GBM
+```{r, collapse=T, comment=NA, warning=F}
+GBM <- train(isFraud~.,data = Train,method = "gbm",
+             preProcess = c("scale", "center"),trControl = trainControl(method = "cv", 
+                                                                        number = 3, verboseIter = TRUE),verbose = 0)
+
+GBM
+```
+Find GBM Classes 
+
+```{r, collapse=T, comment=NA, warning=F}
+preds<-predict(GBM,newdata = Test)
+table(preds,Test$isFraud)
+```
+Get GBM Probabilities
+```{r, collapse=T, comment=NA, warning=F}
+predsVal<-predict(GBM,Test,type='prob')
+```
+Take only positive value class values
+```{r, collapse=T, comment=NA, warning=F}
+Only<-predsVal[,2]
+```
+Plot AUC 
+```{r, collapse=T, comment=NA, warning=F}
+
+library(ROCR)
+GBM_AUCThing <- prediction(Only,Test$isFraud, label.ordering = c(0,1))
+GBM_Chart <- performance(GBM_AUCThing,"tpr", "fpr")
+plot(GBM_Chart)
+Gbm_Final<-GBM$finalModel
+summary(Gbm_Final)
+```
+Get AUC value
+```{r, collapse=T, comment=NA, warning=F}
+auc_ROCR <- performance(GBM_AUCThing, measure = "auc")
+auc_ROCR <- auc_ROCR@y.values[[1]]
+auc_ROCR # [1] 0.7619435
+
+```
+
+### Conclusion
+</br></br>
+Plots for all models
+```{r, collapse=T, comment=NA, warning=F}
+plot(Ridge_Chart, col = "blue")
+plot(Lasso_Chart, add = TRUE, col = "red")
+plot(GBM_Chart, add = TRUE, col = "black")
+plot(XGBOOST_Chart, add = TRUE, col = "green")
+legend("bottomright", legend=c("Ridge", "Lasso ","GBM","XGBOOST"),
+       col=c( "blue","red","black","green","orange"), lty=1, 
+       title="Line types", text.font=4, bg='lightblue')
+```
